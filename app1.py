@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 # --- 1. 核心設定 ---
 TW_TIMEZONE = timezone(timedelta(hours=8))
-CURRENCIES = ['JPY', 'TWD', 'USD', 'EUR']
+CURRENCIES = ['TWD', 'JPY', 'USD', 'EUR']
 DATA_FILE = 'trip_ledger.csv'
 CONFIG_FILE = 'members.json'
 
