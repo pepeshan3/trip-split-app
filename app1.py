@@ -128,9 +128,6 @@ with st.container(border=True):
     if c1.button("💸 一般消費", use_container_width=True, type="primary"): add_entry_dialog(0)
     if c2.button("🤝 登記還款", use_container_width=True): add_entry_dialog(1)
     if c3.button("🤖 AI 辨識", use_container_width=True): ai_ocr_dialog()
-
-# --- 7. 下方顯示原本華麗的清單與結算 (此處省略部分長代碼，請將你原本 app1.py 第 300 行後的內容貼回) ---
-# 包含：smart_fmt, 結算儀表板, 轉帳路徑車票, 歷史紀錄下載
         col1, col2 = st.columns(2)
         item = col1.text_input("項目", value=row_data['Item'])
         amount = col2.number_input("金額", min_value=0.0, step=10.0, value=float(row_data['Amount']))
