@@ -102,11 +102,30 @@ with st.sidebar:
             new_target_name = st.text_input("修改名稱為")
             if st.button("確認修改"):
                 if new_target_name:
+                    # 更新名單
                     st.session_state.members = [new_target_name if x == edit_target else x for x in st.session_state.members]
                     save_members(st.session_state.members)
+                    # 同時更新帳本中的 Payer 和 Beneficiaries
                     df_up = get_ledger()
                     df_up['Payer'] = df_up['Payer'].replace(edit_target, new_target_name)
-                    df_up['Beneficiaries'] = df_up['Beneficiaries'].apply(lambda x: x.replace(edit_target, new_target_name) if isinstance(x, str) else x)
+                    
+                    def update_bens(b_str):
+                        if not isinstance(b_str, str): return b_str
+                        return ",".join([new_target_name if b.strip() == edit_target else b.strip() for b in b_str.split(",")])
+                    
+                    df_up['Beneficiaries'] = df_up['Beneficiaries'].apply(update_bens)
+                    
+                    # 更新 SplitDetails 中的 JSON
+                    def update_json(detail_str):
+                        if not detail_str: return detail_str
+                        try:
+                            d = json.loads(detail_str)
+                            if edit_target in d:
+                                d[new_target_name] = d.pop(edit_target)
+                            return json.dumps(d)
+                        except: return detail_str
+                    
+                    df_up['SplitDetails'] = df_up['SplitDetails'].apply(update_json)
                     save_ledger(df_up)
                     st.rerun()
             if st.button("🗑️ 移除此成員", type="secondary"):
@@ -254,7 +273,14 @@ if not df.empty:
     for i, curr in enumerate(currencies_in_df):
         with tabs[i]:
             curr_df = df[df['Currency'] == curr]
-            balances = {m: 0.0 for m in st.session_state.members}
+            # 初始化餘額，考慮所有曾在紀錄中出現的人，而不只是目前的成員
+            all_involved = set(st.session_state.members)
+            for _, r in curr_df.iterrows():
+                all_involved.add(r['Payer'])
+                for b in str(r['Beneficiaries']).split(","):
+                    if b.strip(): all_involved.add(b.strip())
+            
+            balances = {m: 0.0 for m in all_involved}
             
             for _, row in curr_df.iterrows():
                 amt = float(row['Amount'])
@@ -262,43 +288,51 @@ if not df.empty:
                 bens = [b.strip() for b in str(row['Beneficiaries']).split(",") if b.strip()]
                 
                 if "還款" not in row['Item']:
-                    # 付款者先收回全額
-                    if payer in balances: balances[payer] += amt
-                    
-                    # 處理分帳邏輯
+                    balances[payer] += amt
                     if row.get('SplitMode') == "Manual" and row.get('SplitDetails'):
                         details = json.loads(row['SplitDetails'])
                         for m, share in details.items():
-                            if m in balances: balances[m] -= float(share)
+                            balances[m] -= float(share)
                     else:
                         share = amt / len(bens) if bens else 0
                         for b in bens:
-                            if b in balances: balances[b] -= share
+                            balances[b] -= share
                 else:
-                    if payer in balances: balances[payer] += amt
-                    if bens and bens[0] in balances: balances[bens[0]] -= amt
+                    balances[payer] += amt
+                    if bens: balances[bens[0]] -= amt
+
+            # 檢查帳目是否平衡
+            total_sum = sum(balances.values())
+            if abs(total_sum) > 0.1:
+                st.warning(f"⚠️ 帳目不平衡 (誤差: {total_sum:.2f})。請檢查是否有成員名字不一致或被移除。")
 
             col_l, col_r = st.columns([1, 1])
             with col_l:
                 st.markdown("**個人淨額**")
+                # 只顯示目前成員名單中的人，或者餘額不為零的人
                 for m, bal in balances.items():
-                    color = "#16A34A" if bal >= 0 else "#DC2626"
-                    st.markdown(f"{m}: <span style='color:{color}; font-weight:bold;'>{'+' if bal>=0 else ''}{smart_fmt(bal)}</span>", unsafe_allow_html=True)
+                    if m in st.session_state.members or abs(bal) > 0.01:
+                        color = "#16A34A" if bal >= 0.01 else "#DC2626" if bal <= -0.01 else "#666"
+                        display_name = m if m in st.session_state.members else f"{m} (非現有成員)"
+                        st.markdown(f"{display_name}: <span style='color:{color}; font-weight:bold;'>{'+' if bal>=0.01 else ''}{smart_fmt(bal)}</span>", unsafe_allow_html=True)
             
             with col_r:
                 st.markdown("**建議轉帳路徑**")
                 debtors = sorted([[m, b] for m, b in balances.items() if b < -0.01], key=lambda x: x[1])
                 creditors = sorted([[m, b] for m, b in balances.items() if b > 0.01], key=lambda x: x[1], reverse=True)
                 
-                if not debtors:
-                    st.caption("帳目已平")
+                if not debtors or not creditors:
+                    st.info("無須轉帳或帳目暫時無法匹配。")
                 else:
                     d_idx, c_idx = 0, 0
                     while d_idx < len(debtors) and c_idx < len(creditors):
                         d_name, d_amt = debtors[d_idx]
                         c_name, c_amt = creditors[c_idx]
                         flow = min(abs(d_amt), c_amt)
-                        st.markdown(f"<div class='transfer-ticket'><span class='ticket-name'>{d_name}</span> ➜ <span class='ticket-name'>{c_name}</span> <span class='ticket-amount'>{curr} {smart_fmt(flow)}</span></div>", unsafe_allow_html=True)
+                        
+                        if flow > 0.01:
+                            st.markdown(f"<div class='transfer-ticket'><span class='ticket-name'>{d_name}</span> ➜ <span class='ticket-name'>{c_name}</span> <span class='ticket-amount'>{curr} {smart_fmt(flow)}</span></div>", unsafe_allow_html=True)
+                        
                         debtors[d_idx][1] += flow
                         creditors[c_idx][1] -= flow
                         if abs(debtors[d_idx][1]) < 0.01: d_idx += 1
