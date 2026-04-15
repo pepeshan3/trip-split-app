@@ -5,12 +5,114 @@ import json
 import time
 from datetime import datetime, timedelta, timezone
 
-# --- 1. 核心設定 ---
+# --- 1. 基礎設定 ---
 TW_TIMEZONE = timezone(timedelta(hours=8))
-CURRENCIES = ['JPY', 'TWD', 'USD', 'EUR']
 DATA_FILE = 'trip_ledger.csv'
 CONFIG_FILE = 'members.json'
+CURRENCIES = ['JPY', 'TWD', 'USD', 'EUR']
 
+def load_members():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return []
+
+def save_members(m_list):
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(m_list, f, ensure_ascii=False)
+
+# 初始化
+st.set_page_config(page_title="旅程分帳系統 V2.0", layout="centered")
+if 'members' not in st.session_state:
+    st.session_state['members'] = load_members()
+
+# --- 2. 側邊欄 ---
+with st.sidebar:
+    st.markdown("<style>[data-testid='stSidebar']{background-color:#1E293B;}[data-testid='stSidebar'] *{color:#E2E8F0 !important;}</style>", unsafe_allow_html=True)
+    st.header("👥 成員名單")
+    if st.session_state['members']:
+        st.write(", ".join(st.session_state['members']))
+    new_n = st.text_input("新增名字", key="sidebar_new_n")
+    if st.button("➕ 新增", use_container_width=True):
+        if new_n and new_n not in st.session_state['members']:
+            st.session_state['members'].append(new_n); save_members(st.session_state['members']); st.rerun()
+
+# --- 3. 核心函數 ---
+def save_entry(item, payer, amount, currency, beneficiaries):
+    df_l = pd.read_csv(DATA_FILE) if os.path.exists(DATA_FILE) else pd.DataFrame(columns=['Date', 'Item', 'Payer', 'Amount', 'Currency', 'Beneficiaries'])
+    tw_now = datetime.now(TW_TIMEZONE).strftime('%Y-%m-%d %H:%M')
+    new_e = {'Date': tw_now, 'Item': item, 'Payer': payer, 'Amount': amount, 'Currency': currency, 'Beneficiaries': ",".join(beneficiaries)}
+    pd.concat([df_l, pd.DataFrame([new_e])], ignore_index=True).to_csv(DATA_FILE, index=False)
+
+# --- 4. 功能彈窗 ---
+@st.dialog("➕ 新增紀錄")
+def add_entry_dialog(mode):
+    with st.form("my_form"):
+        col1, col2 = st.columns(2)
+        it = col1.text_input("項目")
+        am = col2.number_input("金額", min_value=0.0, format="%g")
+        py = st.selectbox("付款人", st.session_state['members'])
+        be = st.multiselect("分給誰?", st.session_state['members'], default=st.session_state['members'])
+        if st.form_submit_button("儲存"):
+            if am > 0 and it: save_entry(it, py, am, "TWD", be); st.rerun()
+
+@st.dialog("🤖 AI 智慧辨識分帳")
+def ai_ocr_dialog():
+    st.write("📸 模擬 AI 解析收據中...")
+    up = st.file_uploader("上傳收據照片", type=["jpg", "png", "jpeg"])
+    if up:
+        with st.status("正在辨識中..."): time.sleep(1.5)
+        mock = [{"n": "牛肉麵", "p": 180}, {"n": "大滷麵", "p": 150}]
+        py_ocr = st.selectbox("誰墊錢?", st.session_state['members'], key="ocr_p_s")
+        for i, d in enumerate(mock):
+            c1, c2 = st.columns([2, 3])
+            c1.write(f"**{d['n']}** (${d['p']})")
+            sel = c2.multiselect("誰吃的?", st.session_state['members'], key=f"ocr_m_{i}")
+            if st.button(f"確認匯入 {d['n']}", key=f"ocr_b_{i}"):
+                if sel: save_entry(d['n'], py_ocr, d['p'], "TWD", sel); st.toast(f"{d['n']} 成功！")
+        if st.button("全部匯入完成", use_container_width=True): st.rerun()
+
+# --- 5. 主介面 ---
+if not st.session_state['members']:
+    st.info("👈 請先在左側新增成員"); st.stop()
+
+st.title("✈️ 旅程分帳系統 V2.0")
+with st.container(border=True):
+    cl1, cl2, cl3 = st.columns(3)
+    if cl1.button("💸 一般消費", use_container_width=True, type="primary"): add_entry_dialog(0)
+    if cl2.button("🤝 登記還款", use_container_width=True): add_entry_dialog(1)
+    if cl3.button("🤖 AI 辨識", use_container_width=True): ai_ocr_dialog()
+
+# 顯示帳務表
+if os.path.exists(DATA_FILE):
+    df = pd.read_csv(DATA_FILE)
+    st.subheader("📝 帳務明細")
+    st.dataframe(df.iloc[::-1], use_container_width=True)
+else:
+    st.info("目前尚無資料")
+import streamlit as st
+import pandas as pd
+import os
+import json
+import time
+from datetime import datetime, timedelta, timezone # <--- 新增這個
+
+# --- 設定 ---
+# 定義台灣時區 (UTC+8)
+TW_TIMEZONE = timezone(timedelta(hours=8))
+
+# --- 設定 ---
+# 定義哪些幣別是「整數幣別」(不需要小數點)
+INT_CURRENCIES = ['TWD', 'JPY', 'KRW', 'VND']
+# 定義所有支援幣別
+CURRENCIES = ['TWD', 'JPY', 'USD', 'EUR']
+
+# --- 設定檔案路徑 ---
+DATA_FILE = 'trip_ledger.csv'      # 存帳務資料
+CONFIG_FILE = 'members.json'       # 存成員名單
+CURRENCIES = ['JPY', 'TWD', 'USD', 'EUR'] # 這裡可以自己擴充
+
+# --- 函數：讀取與儲存成員 ---
 def load_members():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -21,113 +123,272 @@ def save_members(members_list):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(members_list, f, ensure_ascii=False)
 
-# --- 2. 初始化 ---
-st.set_page_config(page_title="旅程分帳系統 V2.0", layout="centered")
+# --- 初始化 ---
+st.set_page_config(page_title="旅程分帳系統", layout="centered")
 
+# 讀取現有成員
 if 'members' not in st.session_state:
     st.session_state['members'] = load_members()
 
-# --- 3. 側邊欄：成員管理 (深色質感版) ---
+# --- 側邊欄：成員管理 (深色質感版) ---
 with st.sidebar:
+    # 1. CSS 魔法：強制側邊欄深色化、優化分隔線
     st.markdown("""
     <style>
-        [data-testid="stSidebar"] { background-color: #1E293B; }
-        [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3, 
-        [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown, [data-testid="stSidebar"] p {
+        /* 強制側邊欄背景變深灰藍色 */
+        [data-testid="stSidebar"] {
+            background-color: #1E293B; /* 質感深藍灰 */
+        }
+        /* 側邊欄的所有文字變白 */
+        [data-testid="stSidebar"] h1, 
+        [data-testid="stSidebar"] h2, 
+        [data-testid="stSidebar"] h3, 
+        [data-testid="stSidebar"] label, 
+        [data-testid="stSidebar"] .stMarkdown,
+        [data-testid="stSidebar"] p {
             color: #E2E8F0 !important;
         }
+        /* 成員名單的膠囊樣式 */
         .member-capsule {
-            display: inline-block; background-color: rgba(255, 255, 255, 0.1);
-            color: #F8FAFC; padding: 4px 12px; border-radius: 20px; margin: 4px 2px;
-            font-size: 0.9rem; border: 1px solid rgba(255, 255, 255, 0.2);
+            display: inline-block;
+            background-color: rgba(255, 255, 255, 0.1);
+            color: #F8FAFC;
+            padding: 4px 12px;
+            border-radius: 20px;
+            margin: 4px 2px;
+            font-size: 0.9rem;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        /* 優化分隔線：改成半透明虛線 */
+        .custom-divider {
+            margin: 20px 0;
+            border-top: 1px dashed rgba(255, 255, 255, 0.2);
+        }
+        /* 讓輸入框標題不明顯的問題修正 */
+        .stTextInput label, .stSelectbox label {
+            color: #CBD5E1 !important;
         }
     </style>
     """, unsafe_allow_html=True)
+
     st.header("👥 成員名單")
-    if st.session_state['members']:
-        member_html = "".join([f"<span class='member-capsule'>{m}</span>" for m in st.session_state['members']])
-        st.markdown(f"<div style='margin-bottom: 15px;'>{member_html}</div>", unsafe_allow_html=True)
     
-    # 修正 Duplicate ID 的關鍵：加上 unique key
-    new_name = st.text_input("輸入名字", placeholder="你的名字", key="sidebar_new_name_input")
-    if st.button("➕ 新增成員", use_container_width=True, key="sidebar_add_btn"):
-        if new_name and new_name not in st.session_state['members']:
-            st.session_state['members'].append(new_name)
-            save_members(st.session_state['members'])
+    # 2. 成員展示區 (常態秀出)
+    # 使用 HTML 膠囊標籤顯示，比純文字列表好看
+    if st.session_state['members']:
+        member_html = ""
+        for m in st.session_state['members']:
+            member_html += f"<span class='member-capsule'>{m}</span>"
+        st.markdown(f"<div style='margin-bottom: 15px;'>{member_html}</div>", unsafe_allow_html=True)
+    else:
+        st.info("目前還沒有成員，請在下方新增")
+
+    # 3. 新增成員 (簡單快速)
+    # 這裡只放最常用的「新增」，保持乾淨
+    col_add_1, col_add_2 = st.columns([2, 1])
+    with col_add_1:
+        new_name = st.text_input("輸入名字", placeholder="你的名字", label_visibility="collapsed")
+    with col_add_2:
+        if st.button("➕", help="新增成員", use_container_width=True):
+            if new_name and new_name not in st.session_state['members']:
+                st.session_state['members'].append(new_name)
+                save_members(st.session_state['members'])
+                st.rerun()
+            elif new_name in st.session_state['members']:
+                st.toast("這個名字已經有了喔！", icon="⚠️")
+
+    # 漂亮的自訂分隔線
+    st.markdown("<div class='custom-divider'></div>", unsafe_allow_html=True)
+
+    # 4. 進階後台 (全部收納在這裡)
+    # 使用 expander 讓平常不需要的功能藏起來
+    with st.expander("⚙️ 設定與進階操作"):
+        
+        # A. 修改/移除成員
+        st.caption("🔧 成員管理")
+        if st.session_state['members']:
+            target_member = st.selectbox("選擇對象", st.session_state['members'])
+            action = st.radio("動作", ["修改名字", "移除成員"], horizontal=True, label_visibility="collapsed")
+            
+            if action == "修改名字":
+                rename_input = st.text_input(f"把 {target_member} 改為")
+                if st.button("確認改名"):
+                    if rename_input and rename_input != target_member:
+                        # 更新名單
+                        st.session_state['members'] = [rename_input if x == target_member else x for x in st.session_state['members']]
+                        save_members(st.session_state['members'])
+                        # 更新帳本 (這段邏輯保留)
+                        if os.path.exists(DATA_FILE):
+                            df_update = pd.read_csv(DATA_FILE)
+                            # 清洗 Unnamed
+                            df_update = df_update.loc[:, ~df_update.columns.str.contains('^Unnamed')]
+                            
+                            df_update['Payer'] = df_update['Payer'].replace(target_member, rename_input)
+                            def update_bens(b_str):
+                                if pd.isna(b_str): return b_str
+                                names = str(b_str).split(',')
+                                new_names = [rename_input if n.strip() == target_member else n.strip() for n in names]
+                                return ",".join(new_names)
+                            df_update['Beneficiaries'] = df_update['Beneficiaries'].apply(update_bens)
+                            df_update.to_csv(DATA_FILE, index=False)
+                        
+                        st.success("改名成功！")
+                        time.sleep(0.5)
+                        st.rerun()
+            
+            elif action == "移除成員":
+                st.caption(f"⚠️ 移除不會刪除 {target_member} 的記帳紀錄")
+                if st.button(f"確定移除 {target_member}", type="primary"):
+                    st.session_state['members'].remove(target_member)
+                    save_members(st.session_state['members'])
+                    st.rerun()
+        
+        st.markdown("<div class='custom-divider'></div>", unsafe_allow_html=True)
+
+        # B. 階段性結算 (關帳)
+        st.caption("🔒 帳務封存")
+        if st.button("封存目前帳本並開新局"):
+             if os.path.exists(DATA_FILE):
+                if not os.path.exists("history"): os.makedirs("history")
+                timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+                backup_file = f"history/ledger_{timestamp}.csv"
+                df_current = pd.read_csv(DATA_FILE)
+                df_current.to_csv(backup_file, index=False)
+                # 清空
+                empty_df = pd.DataFrame(columns=['Date', 'Item', 'Payer', 'Amount', 'Currency', 'Beneficiaries'])
+                empty_df.to_csv(DATA_FILE, index=False)
+                st.success(f"已封存！")
+                time.sleep(1)
+                st.rerun()
+        
+        # C. 歷史下載
+        if os.path.exists("history"):
+            st.markdown("<br>", unsafe_allow_html=True)
+            files = [f for f in os.listdir("history") if f.endswith(".csv")]
+            files.sort(reverse=True)
+            if files:
+                selected_hist = st.selectbox("下載歷史紀錄", files)
+                file_path = os.path.join("history", selected_hist)
+                with open(file_path, "r", encoding="utf-8") as f:
+                    st.download_button(f"📥 下載 {selected_hist}", f, file_name=selected_hist, mime="text/csv")
+
+        # D. 危險操作
+        st.markdown("<div class='custom-divider'></div>", unsafe_allow_html=True)
+        if st.button("⚠️ 重置所有成員 (危險)", type="secondary"):
+            st.session_state['members'] = []
+            save_members([])
             st.rerun()
 
-# --- 4. 輔助函數：存檔 ---
-def save_entry(item, payer, amount, currency, beneficiaries):
-    if os.path.exists(DATA_FILE):
-        df_l = pd.read_csv(DATA_FILE)
-        df_l = df_l.loc[:, ~df_l.columns.str.contains('^Unnamed')]
-    else:
-        df_l = pd.DataFrame(columns=['Date', 'Item', 'Payer', 'Amount', 'Currency', 'Beneficiaries'])
-    tw_now = datetime.now(TW_TIMEZONE).strftime('%Y-%m-%d %H:%M')
-    new_entry = {'Date': tw_now, 'Item': item, 'Payer': payer, 'Amount': amount, 'Currency': currency, 'Beneficiaries': ",".join(beneficiaries)}
-    df_l = pd.concat([df_l, pd.DataFrame([new_entry])], ignore_index=True)
-    df_l.to_csv(DATA_FILE, index=False)
+# --- 主畫面：記帳邏輯 ---
+# 檢查是否有成員，如果沒有，停止渲染後面的內容
+if not st.session_state['members']:
+    st.info("👈 請先在左側側邊欄「新增成員」才能開始記帳喔！")
+    st.stop()
 
-# --- 5. 對話框區 (三大功能) ---
+# 1. 讀取/初始化帳務資料
+if os.path.exists(DATA_FILE):
+    df = pd.read_csv(DATA_FILE)
+    
+    # --- 🔥 新增這行：自動清洗髒資料 ---
+    # 如果發現有 'Unnamed: 0' 這種奇怪的欄位 (Excel 或舊存檔造成的)，直接刪除
+    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+    
+else:
+    df = pd.DataFrame(columns=['Date', 'Item', 'Payer', 'Amount', 'Currency', 'Beneficiaries'])
 
+# --- 定義彈出視窗函數 (放在主邏輯之前) ---
+
+# A. 新增用的彈出視窗 (簡潔版：單一模式，不顯示切換選單)
 @st.dialog("➕ 新增紀錄")
 def add_entry_dialog(mode):
+    # mode: 0 = 一般消費, 1 = 結帳還款
+
+    # --- 情況一：一般消費 ---
     if mode == 0:
         st.subheader("💸 新增消費")
-        with st.form("exp_form"):
+        # st.caption("📝 記錄大家的消費支出") # 想要更簡潔這行也可以拿掉
+        
+        with st.form("add_expense_form"):
             col1, col2 = st.columns(2)
-            item = col1.text_input("消費項目")
-            amount = col2.number_input("金額", min_value=0.0, step=10.0, format="%g")
+            item = col1.text_input("消費項目", placeholder="如: 晚餐、車票")
+            amount = col2.number_input("金額", min_value=0.0, step=10.0, format="%g", key="exp_amt")
+            
             col3, col4 = st.columns(2)
-            payer = col3.selectbox("誰先墊錢?", st.session_state['members'])
-            currency = col4.selectbox("幣別", CURRENCIES)
-            beneficiaries = st.multiselect("分給誰?", st.session_state['members'], default=st.session_state['members'])
-            if st.form_submit_button("儲存"):
-                save_entry(item, payer, amount, currency, beneficiaries)
-                st.rerun()
+            payer = col3.selectbox("誰先墊錢?", st.session_state['members'], key="exp_payer")
+            currency = col4.selectbox("幣別", CURRENCIES, key="exp_curr")
+            
+            beneficiaries = st.multiselect(
+                "分給誰? (預設全員)", 
+                st.session_state['members'], 
+                default=st.session_state['members'],
+                key="exp_ben"
+            )
+            
+            if st.form_submit_button("💾 儲存消費", type="primary"):
+                if amount > 0 and len(beneficiaries) > 0 and item:
+                    save_entry(item, payer, amount, currency, beneficiaries)
+                else:
+                    st.error("請輸入完整資訊")
+
+    # --- 情況二：結帳/還款 ---
     elif mode == 1:
         st.subheader("🤝 登記還款")
-        with st.form("stl_form"):
-            p_s = st.selectbox("誰還錢?", st.session_state['members'])
-            r_s = st.selectbox("還給誰?", st.session_state['members'])
-            a_s = st.number_input("還款金額", min_value=0.0, format="%g")
-            c_s = st.selectbox("幣別", CURRENCIES)
-            if st.form_submit_button("確認還款"):
-                save_entry(f"還款: {p_s} -> {r_s}", p_s, a_s, c_s, [r_s])
-                st.rerun()
-
-@st.dialog("🤖 AI 智慧辨識 (模擬模式)")
-def ai_ocr_dialog():
-    st.write("📸 掃描收據照片中文字與數字...")
-    up = st.file_uploader("選擇照片", type=["jpg", "png", "jpeg"])
-    if up:
-        with st.status("AI 辨識中...", expanded=True) as s:
-            time.sleep(1.2); s.write("解析文字..."); time.sleep(1.0); s.update(label="✅ 辨識成功", state="complete")
+        st.info("💡 記錄「誰把錢還給了誰」。")
         
-        mock_data = [{"n": "特製牛肉麵", "p": 180}, {"n": "招牌大滷麵", "p": 150}, {"n": "滷蛋", "p": 15}]
-        payer = st.selectbox("誰墊錢?", st.session_state['members'], key="ocr_p")
-        final = []
-        for i, d in enumerate(mock_data):
-            c1, c2 = st.columns([2, 3])
-            c1.write(f"**{d['n']}** (${d['p']})")
-            sel = c2.multiselect("誰點的?", st.session_state['members'], key=f"o_{i}")
-            if sel: final.append({"n": d['n'], "p": d['p'], "b": sel})
-        if st.button("🚀 批次匯入", type="primary", use_container_width=True):
-            for x in final: save_entry(x['n'], payer, x['p'], "TWD", x['b'])
-            st.success("匯入完成！"); st.balloons(); time.sleep(1); st.rerun()
+        with st.form("settle_form"):
+            col_s1, col_s2 = st.columns(2)
+            payer_s = col_s1.selectbox("誰還錢? (付款)", st.session_state['members'], key="stl_payer")
+            receiver_s = col_s2.selectbox("還給誰? (收錢)", st.session_state['members'], key="stl_receiver")
+            
+            col_s3, col_s4 = st.columns(2)
+            amount_s = col_s3.number_input("還款金額", min_value=0.0, step=100.0, format="%g", key="stl_amount")
+            currency_s = col_s4.selectbox("幣別", CURRENCIES, key="stl_curr")
+            
+            if st.form_submit_button("🤝 確認還款", type="primary"):
+                if amount_s > 0 and payer_s != receiver_s:
+                    item_name = f"還款: {payer_s} -> {receiver_s}"
+                    save_entry(item_name, payer_s, amount_s, currency_s, [receiver_s])
+                else:
+                    st.error("金額需大於0且不能自己還自己")
 
-# --- 6. 主介面展示 ---
-df = pd.read_csv(DATA_FILE) if os.path.exists(DATA_FILE) else pd.DataFrame(columns=['Date', 'Item', 'Payer', 'Amount', 'Currency', 'Beneficiaries'])
-df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+# --- 輔助函數：存檔 (修正時區) ---
+def save_entry(item, payer, amount, currency, beneficiaries):
+    if os.path.exists(DATA_FILE):
+        df = pd.read_csv(DATA_FILE)
+        # 清洗舊資料 (避免 Unnamed 欄位)
+        df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+    else:
+        df = pd.DataFrame(columns=['Date', 'Item', 'Payer', 'Amount', 'Currency', 'Beneficiaries'])
+    
+    # 使用台灣時間
+    tw_now = datetime.now(TW_TIMEZONE).strftime('%Y-%m-%d %H:%M')
 
-st.markdown("<h1 style='font-weight:800; font-size:2.5rem; color:#1F2937;'>✈️ 旅程分帳系統 V2.0</h1>", unsafe_allow_html=True)
-st.markdown(f"<div style='color:#64748B; margin-bottom:20px;'>👥 {len(st.session_state['members'])} 位夥伴 | 💰 {len(df)} 筆紀錄</div>", unsafe_allow_html=True)
+    new_entry = {
+        'Date': tw_now,
+        'Item': item,
+        'Payer': payer,
+        'Amount': amount,
+        'Currency': currency,
+        'Beneficiaries': ",".join(beneficiaries)
+    }
+    
+    df = pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True)
+    df.to_csv(DATA_FILE, index=False)
+    
+    st.success("已儲存！")
+    st.balloons()
+    time.sleep(1.0)
+    st.rerun()
 
-with st.container(border=True):
-    c1, c2, c3 = st.columns(3)
-    if c1.button("💸 一般消費", use_container_width=True, type="primary"): add_entry_dialog(0)
-    if c2.button("🤝 登記還款", use_container_width=True): add_entry_dialog(1)
-    if c3.button("🤖 AI 辨識", use_container_width=True): ai_ocr_dialog()
+# --- B. 修改用的彈出視窗 ---
+@st.dialog("✏️ 修改紀錄")
+def edit_entry_dialog(index, row_data):
+    # 解析舊資料
+    original_beneficiaries = str(row_data['Beneficiaries']).split(",")
+    # 過濾有效成員
+    valid_defaults = [m for m in original_beneficiaries if m in st.session_state['members']]
+    
+    with st.form("edit_form"):
         col1, col2 = st.columns(2)
         item = col1.text_input("項目", value=row_data['Item'])
         amount = col2.number_input("金額", min_value=0.0, step=10.0, value=float(row_data['Amount']))
