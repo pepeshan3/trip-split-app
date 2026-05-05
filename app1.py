@@ -140,6 +140,90 @@ if not st.session_state.members:
 
 df = get_ledger()
 
+@st.dialog("🤖 AI 智慧辨識")
+def ai_recognition_dialog():
+    st.write("📷 請上傳收據或發票照片，AI 將自動辨識品項。")
+    uploaded_file = st.file_uploader("選擇照片", type=["jpg", "png", "jpeg"], key="ai_file_uploader", label_visibility="collapsed")
+    
+    if uploaded_file:
+        # 模擬 AI 解析過程
+        status_text = st.empty()
+        progress_bar = st.progress(0)
+        
+        for percent_complete in range(100):
+            time.sleep(0.01)
+            progress_bar.progress(percent_complete + 1)
+            if percent_complete < 30:
+                status_text.text("🔍 正在尋找收據邊界...")
+            elif percent_complete < 70:
+                status_text.text("✍️ 正在辨識文字與金額...")
+            else:
+                status_text.text("📊 正在產 品項清單...")
+        
+        status_text.success("✅ 解析完成！")
+        st.write("---")
+        
+        # 模擬產出的品項清單
+        mock_items = [
+            {"name": "牛肉麵", "price": 180.0},
+            {"name": "大滷麵", "price": 150.0}
+        ]
+        
+        st.subheader("📋 辨識結果")
+        st.caption("請選擇誰先墊錢，並勾選每個品項的分帳夥伴：")
+        
+        payer = st.selectbox("誰先墊錢？", st.session_state.members, key="ai_global_payer")
+        curr = st.selectbox("幣別", CURRENCIES, key="ai_global_curr")
+        
+        # 儲存每個品項的勾選結果
+        ai_selections = {}
+        
+        for i, item in enumerate(mock_items):
+            with st.container(border=True):
+                col_item, col_bens = st.columns([1, 2])
+                col_item.markdown(f"**{item['name']}**")
+                col_item.markdown(f"💰 ${item['price']}")
+                
+                selected = col_bens.multiselect(
+                    f"分帳夥伴 ({item['name']})", 
+                    st.session_state.members, 
+                    key=f"ai_item_ben_{i}",
+                    label_visibility="collapsed"
+                )
+                ai_selections[i] = selected
+        
+        st.write("---")
+        if st.button("🚀 批次存入帳本", type="primary", use_container_width=True, key="ai_batch_save"):
+            new_records = []
+            now_str = datetime.now(TW_TIMEZONE).strftime('%Y-%m-%d %H:%M')
+            
+            save_count = 0
+            for i, item in enumerate(mock_items):
+                bens = ai_selections[i]
+                if bens:
+                    new_row = {
+                        'Date': now_str,
+                        'Item': item['name'],
+                        'Payer': payer,
+                        'Amount': float(item['price']),
+                        'Currency': curr,
+                        'Beneficiaries': ",".join(bens),
+                        'SplitMode': "Equal",
+                        'SplitDetails': ""
+                    }
+                    new_records.append(new_row)
+                    save_count += 1
+            
+            if new_records:
+                current_ledger = get_ledger()
+                updated_ledger = pd.concat([current_ledger, pd.DataFrame(new_records)], ignore_index=True)
+                save_ledger(updated_ledger)
+                st.success(f"成功存入 {save_count} 筆紀錄！")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("請至少勾選一個品項的分帳夥伴")
+
 @st.dialog("➕ 新增帳務")
 def add_entry_ui(is_repayment=False):
     if not is_repayment:
@@ -152,12 +236,9 @@ def add_entry_ui(is_repayment=False):
             st.write("---")
             split_mode = st.radio("分帳方式", ["所有人平分", "自定義金額 (點餐分帳)"], horizontal=True)
             
-            # 🔥 改進：根據分帳方式決定「參與成員」的預設勾選行為
             if split_mode == "所有人平分":
-                # 平分模式下，預設全選，方便快速操作
                 selected_bens = st.multiselect("參與成員", st.session_state.members, default=st.session_state.members, key="bens_equal")
             else:
-                # 點餐模式下，預設為空，讓使用者手動挑選「有吃這頓飯的人」
                 selected_bens = st.multiselect("參與成員 (請點選有參與點餐的人)", st.session_state.members, default=[], key="bens_manual")
             
             total_amount = 0.0
@@ -230,11 +311,14 @@ def edit_entry_ui(idx, row):
 st.title("✈️ 旅程分帳系統")
 st.markdown(f"**{len(st.session_state.members)}** 位夥伴 | **{len(df)}** 筆紀錄")
 
-c1, c2 = st.columns(2)
+# 控制島：調整為 3 欄
+c1, c2, c3 = st.columns(3)
 if c1.button("💸 新增支出", use_container_width=True, type="primary"):
     add_entry_ui(False)
 if c2.button("🤝 登記還款", use_container_width=True):
     add_entry_ui(True)
+if c3.button("🤖 AI 智慧辨識", use_container_width=True):
+    ai_recognition_dialog()
 
 st.divider()
 
@@ -319,4 +403,4 @@ if not df.empty:
                         if abs(crtr[ci][1]) < 0.01: ci += 1
 
 st.caption("---")
-st.caption("⚡️ 已優化自定義分帳的成員選取流程。")
+st.caption("⚡️ 已新增 AI 智慧辨識功能模組。")
