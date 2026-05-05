@@ -161,31 +161,17 @@ df = get_ledger()
 
 @st.dialog("➕ 新增帳務")
 def add_entry_ui(is_repayment=False):
-    # 初始化 Session State 用於控制 UI 動態切換
-    if 'add_split_mode' not in st.session_state:
-        st.session_state.add_split_mode = "所有人平分"
+    # 初始化 Session State 用於備註緩存
     if 'add_temp_details' not in st.session_state:
         st.session_state.add_temp_details = ""
-    if 'add_selected_bens' not in st.session_state:
-        st.session_state.add_selected_bens = st.session_state.members
     
     if not is_repayment:
         st.subheader("💸 新增支出")
         
-        # 模式切換邏輯 (放在 form 外部以支援即時重新渲染)
+        # 模式切換邏輯：直接渲染，不使用手動 st.rerun
         mode = st.radio("分帳方式", ["所有人平分", "自定義金額 (點餐分帳)"], 
-                        index=0 if st.session_state.add_split_mode == "所有人平分" else 1,
-                        horizontal=True, key="split_mode_radio")
+                        horizontal=True, key="active_split_mode")
         
-        # 當模式改變時，重置參與成員
-        if mode != st.session_state.add_split_mode:
-            st.session_state.add_split_mode = mode
-            if mode == "所有人平分":
-                st.session_state.add_selected_bens = st.session_state.members
-            else:
-                st.session_state.add_selected_bens = []
-            st.rerun()
-
         with st.form("expense_form", clear_on_submit=True):
             item = st.text_input("消費項目", placeholder="例如：居酒屋餐費", key="add_item_name")
             col_curr, col_payer = st.columns(2)
@@ -196,70 +182,65 @@ def add_entry_ui(is_repayment=False):
             
             total_amount = 0.0
             custom_shares = {}
+            final_bens = []
             
             if mode == "所有人平分":
+                # 平分模式：自動加載全部成員
                 selected_bens = st.multiselect("參與成員", st.session_state.members, 
-                                               default=st.session_state.add_selected_bens, 
+                                               default=st.session_state.members, 
                                                key="bens_equal_input")
                 total_amount = st.number_input("總金額", min_value=0.0, step=100.0, key="total_amt_input")
+                final_bens = selected_bens
             else:
-                st.info("💡 選擇成員並輸入個別金額，系統將自動加總。")
-                selected_bens = st.multiselect("誰有點餐？", st.session_state.members, 
-                                               default=st.session_state.add_selected_bens, 
-                                               key="bens_manual_input")
-                
-                if selected_bens:
-                    for m in selected_bens:
-                        val = st.number_input(f"💰 {m} 的金額", min_value=0.0, step=10.0, key=f"share_val_{m}")
+                # 自定義模式：顯示「人名 + 輸入框」清單
+                st.info("💡 請在對應成員旁輸入金額，系統將自動加總。")
+                for m in st.session_state.members:
+                    val = st.number_input(f"💰 {m} 的金額", min_value=0.0, step=10.0, key=f"share_val_{m}")
+                    if val > 0:
                         custom_shares[m] = val
-                    total_amount = sum(custom_shares.values())
-                    st.markdown(f"#### 📟 自動加總：**{curr} {smart_fmt(total_amount)}**")
-                else:
-                    st.warning("請先選擇參與點餐的成員")
+                        final_bens.append(m)
+                
+                total_amount = sum(custom_shares.values())
+                st.markdown(f"#### 📟 自動加總：**{curr} {smart_fmt(total_amount)}**")
             
             st.write("---")
-            # 明細備註與快速標籤
+            # 明細備註
             details = st.text_area("收據明細備註 (選填)", 
                                    value=st.session_state.add_temp_details,
                                    placeholder="格式：小明 180 / 小華 150", 
                                    key="details_area")
             
-            # 快速標籤按鈕 (提示：按鈕在 form 內需透過手動處理，這裡改用 columns 模擬)
-            st.caption("快速標籤：")
-            tag_cols = st.columns(4)
-            tags = ["🍴 午餐", "🚗 交通", "🏨 住宿", "🎟️ 門票"]
-            # 註：在 Form 內的按鈕會觸發 Submit，所以我們用 checkbox 模擬或提示使用者手動輸入
-            st.write("建議格式：成員 金額 / 成員 金額")
-            
             if st.form_submit_button("確認儲存", type="primary"):
-                if item and total_amount > 0 and selected_bens:
+                if item and total_amount > 0 and final_bens:
                     details_json = json.dumps(custom_shares) if mode != "所有人平分" else ""
                     new_row = {
                         'Date': datetime.now(TW_TIMEZONE).strftime('%Y-%m-%d %H:%M'),
                         'Item': str(item), 'Payer': str(payer), 'Amount': float(total_amount), 
-                        'Currency': str(curr), 'Beneficiaries': ",".join(selected_bens),
+                        'Currency': str(curr), 'Beneficiaries': ",".join(final_bens),
                         'SplitMode': "Manual" if mode != "所有人平分" else "Equal",
                         'SplitDetails': details_json,
                         'Details': str(details)
                     }
                     save_ledger(pd.concat([get_ledger(), pd.DataFrame([new_row])], ignore_index=True))
-                    # 儲存後重置
+                    # 儲存後重置備註
                     st.session_state.add_temp_details = ""
                     st.success("已儲存紀錄！")
                     st.rerun()
                 else:
-                    st.error("請檢查項目、金額與參與成員是否完整。")
+                    st.error("請檢查項目、金額與參與成員是否完整（金額需大於 0）。")
                     
-        # 快速標籤 (放在 form 外以支援點擊立即更新 state)
+        # 快速標籤 (放在 form 外，但不觸發全域 rerun 以防彈窗關閉)
         st.markdown("##### 快速填寫備註標籤")
+        tags = ["🍴 午餐", "🚗 交通", "🏨 住宿", "🎟️ 門票"]
         t_cols = st.columns(4)
         for i, tag in enumerate(tags):
             if t_cols[i].button(tag, key=f"tag_btn_{i}", use_container_width=True):
-                # 如果備註是空的就直接填，否則換行填
+                # 更新 Session State
                 if st.session_state.add_temp_details:
-                    st.session_state.add_temp_details += f"\n{tag}"
+                    st.session_state.add_temp_details += f" / {tag}"
                 else:
                     st.session_state.add_temp_details = tag
+                # 注意：這會觸發 Dialog 內的重新渲染，因為 Dialog 是獨立的
                 st.rerun()
 
     else:
