@@ -37,7 +37,7 @@ def get_ledger():
                 if col not in df.columns:
                     df[col] = "Equal" if col == 'SplitMode' else ""
             
-            # 🔥 重要修復：確保關鍵欄位沒有 NaN，否則會報 TypeError
+            # 確保關鍵欄位沒有 NaN，否則會報 TypeError
             df['Item'] = df['Item'].fillna("未命名項目").astype(str)
             df['Payer'] = df['Payer'].fillna("未知").astype(str)
             df['Beneficiaries'] = df['Beneficiaries'].fillna("").astype(str)
@@ -151,18 +151,30 @@ def add_entry_ui(is_repayment=False):
             payer = col_payer.selectbox("誰先墊錢？", st.session_state.members)
             st.write("---")
             split_mode = st.radio("分帳方式", ["所有人平分", "自定義金額 (點餐分帳)"], horizontal=True)
-            selected_bens = st.multiselect("參與成員", st.session_state.members, default=st.session_state.members)
+            
+            # 🔥 改進：根據分帳方式決定「參與成員」的預設勾選行為
+            if split_mode == "所有人平分":
+                # 平分模式下，預設全選，方便快速操作
+                selected_bens = st.multiselect("參與成員", st.session_state.members, default=st.session_state.members, key="bens_equal")
+            else:
+                # 點餐模式下，預設為空，讓使用者手動挑選「有吃這頓飯的人」
+                selected_bens = st.multiselect("參與成員 (請點選有參與點餐的人)", st.session_state.members, default=[], key="bens_manual")
+            
             total_amount = 0.0
             custom_shares = {}
             if split_mode == "所有人平分":
                 total_amount = st.number_input("總金額", min_value=0.0, step=100.0)
             else:
-                st.info("請輸入每位成員的消費金額：")
-                for m in selected_bens:
-                    val = st.number_input(f"{m} 的金額", min_value=0.0, step=10.0, key=f"share_{m}")
-                    custom_shares[m] = val
-                total_amount = sum(custom_shares.values())
-                st.markdown(f"**自動計算總額：{curr} {smart_fmt(total_amount)}**")
+                if selected_bens:
+                    st.info("請輸入已選中成員的個別金額：")
+                    for m in selected_bens:
+                        val = st.number_input(f"{m} 的金額", min_value=0.0, step=10.0, key=f"share_{m}")
+                        custom_shares[m] = val
+                    total_amount = sum(custom_shares.values())
+                    st.markdown(f"**自動加總：{curr} {smart_fmt(total_amount)}**")
+                else:
+                    st.warning("請先在上方挑選參與成員")
+                    
             if st.form_submit_button("確認儲存", type="primary"):
                 if item and total_amount > 0 and selected_bens:
                     details_json = json.dumps(custom_shares) if split_mode != "所有人平分" else ""
@@ -177,7 +189,7 @@ def add_entry_ui(is_repayment=False):
                     st.success("已儲存紀錄！")
                     st.rerun()
                 else:
-                    st.error("請確認資訊是否正確")
+                    st.error("請確認項目、金額與參與成員是否填寫正確")
     else:
         st.subheader("🤝 登記還款")
         with st.form("repay_form"):
@@ -230,7 +242,6 @@ st.divider()
 st.subheader("📝 帳務明細")
 if not df.empty:
     for idx, row in df.iloc[::-1].iterrows():
-        # 🔥 這裡做了 str() 轉換，防止 NaN 導致報錯
         item_text = str(row['Item'])
         is_repayment = "還款" in item_text
         
@@ -308,4 +319,4 @@ if not df.empty:
                         if abs(crtr[ci][1]) < 0.01: ci += 1
 
 st.caption("---")
-st.caption("⚡️ 已針對空資料進行修復。")
+st.caption("⚡️ 已優化自定義分帳的成員選取流程。")
