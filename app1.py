@@ -28,18 +28,14 @@ def save_members(members_list):
         json.dump(members_list, f, ensure_ascii=False)
 
 def get_ledger():
-    # 增加 Details 欄位
     cols = ['Date', 'Item', 'Payer', 'Amount', 'Currency', 'Beneficiaries', 'SplitMode', 'SplitDetails', 'Details']
     if os.path.exists(DATA_FILE):
         try:
             df = pd.read_csv(DATA_FILE)
             df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-            # 確保欄位齊全且處理 NaN
             for col in cols:
                 if col not in df.columns:
                     df[col] = ""
-            
-            # 確保關鍵欄位沒有 NaN
             df['Item'] = df['Item'].fillna("未命名項目").astype(str)
             df['Payer'] = df['Payer'].fillna("未知").astype(str)
             df['Beneficiaries'] = df['Beneficiaries'].fillna("").astype(str)
@@ -62,28 +58,22 @@ def smart_fmt(val):
         return str(val)
 
 def parse_receipt_details(details_str):
-    """解析明細備註並計算金額"""
     if not details_str or details_str.strip() == "":
         return None, 0
-    
     parts = details_str.split('/')
     parsed_results = []
     total_calculated = 0.0
-    
     for p in parts:
-        # 尋找數字 (金額)
         amounts = re.findall(r'\d+', p)
         if amounts:
             val = float(amounts[-1])
             total_calculated += val
-            # 尋找成員名稱
             found_name = "未知"
             for m in st.session_state.members:
                 if m in p:
                     found_name = m
                     break
             parsed_results.append(f"{found_name} 應付 ${smart_fmt(val)}")
-            
     return parsed_results, total_calculated
 
 # --- 頁面初始化 ---
@@ -113,7 +103,6 @@ st.markdown("""
     }
     .ticket-name { font-weight: 700; color: #1E293B; }
     .ticket-amount { font-weight: 800; color: #2563EB; font-family: monospace; }
-    /* 優化 Expander 字體 */
     .stExpander { border: none !important; box-shadow: none !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -172,57 +161,107 @@ df = get_ledger()
 
 @st.dialog("➕ 新增帳務")
 def add_entry_ui(is_repayment=False):
+    # 初始化 Session State 用於控制 UI 動態切換
+    if 'add_split_mode' not in st.session_state:
+        st.session_state.add_split_mode = "所有人平分"
+    if 'add_temp_details' not in st.session_state:
+        st.session_state.add_temp_details = ""
+    if 'add_selected_bens' not in st.session_state:
+        st.session_state.add_selected_bens = st.session_state.members
+    
     if not is_repayment:
         st.subheader("💸 新增支出")
+        
+        # 模式切換邏輯 (放在 form 外部以支援即時重新渲染)
+        mode = st.radio("分帳方式", ["所有人平分", "自定義金額 (點餐分帳)"], 
+                        index=0 if st.session_state.add_split_mode == "所有人平分" else 1,
+                        horizontal=True, key="split_mode_radio")
+        
+        # 當模式改變時，重置參與成員
+        if mode != st.session_state.add_split_mode:
+            st.session_state.add_split_mode = mode
+            if mode == "所有人平分":
+                st.session_state.add_selected_bens = st.session_state.members
+            else:
+                st.session_state.add_selected_bens = []
+            st.rerun()
+
         with st.form("expense_form", clear_on_submit=True):
-            item = st.text_input("消費項目", placeholder="例如：居酒屋餐費")
+            item = st.text_input("消費項目", placeholder="例如：居酒屋餐費", key="add_item_name")
             col_curr, col_payer = st.columns(2)
-            curr = col_curr.selectbox("幣別", CURRENCIES)
-            payer = col_payer.selectbox("誰先墊錢？", st.session_state.members)
+            curr = col_curr.selectbox("幣別", CURRENCIES, key="add_curr")
+            payer = col_payer.selectbox("誰先墊錢？", st.session_state.members, key="add_payer")
             
             st.write("---")
-            split_mode = st.radio("分帳方式", ["所有人平分", "自定義金額 (點餐分帳)"], horizontal=True)
-            
-            if split_mode == "所有人平分":
-                selected_bens = st.multiselect("參與成員", st.session_state.members, default=st.session_state.members, key="bens_equal")
-            else:
-                selected_bens = st.multiselect("參與成員 (請點選有參與點餐的人)", st.session_state.members, default=[], key="bens_manual")
             
             total_amount = 0.0
             custom_shares = {}
-            if split_mode == "所有人平分":
-                total_amount = st.number_input("總金額", min_value=0.0, step=100.0)
+            
+            if mode == "所有人平分":
+                selected_bens = st.multiselect("參與成員", st.session_state.members, 
+                                               default=st.session_state.add_selected_bens, 
+                                               key="bens_equal_input")
+                total_amount = st.number_input("總金額", min_value=0.0, step=100.0, key="total_amt_input")
             else:
+                st.info("💡 選擇成員並輸入個別金額，系統將自動加總。")
+                selected_bens = st.multiselect("誰有點餐？", st.session_state.members, 
+                                               default=st.session_state.add_selected_bens, 
+                                               key="bens_manual_input")
+                
                 if selected_bens:
-                    st.info("請輸入已選中成員的個別金額：")
                     for m in selected_bens:
-                        val = st.number_input(f"{m} 的金額", min_value=0.0, step=10.0, key=f"share_{m}")
+                        val = st.number_input(f"💰 {m} 的金額", min_value=0.0, step=10.0, key=f"share_val_{m}")
                         custom_shares[m] = val
                     total_amount = sum(custom_shares.values())
-                    st.markdown(f"**自動加總：{curr} {smart_fmt(total_amount)}**")
+                    st.markdown(f"#### 📟 自動加總：**{curr} {smart_fmt(total_amount)}**")
                 else:
-                    st.warning("請先在上方挑選參與成員")
+                    st.warning("請先選擇參與點餐的成員")
             
             st.write("---")
-            # 新增明細備註功能
-            details = st.text_area("收據明細備註 (選填)", placeholder="小明 牛肉麵 180 / 小華 大滷麵 150", help="格式：夥伴名稱 金額 / 夥伴名稱 金額")
+            # 明細備註與快速標籤
+            details = st.text_area("收據明細備註 (選填)", 
+                                   value=st.session_state.add_temp_details,
+                                   placeholder="格式：小明 180 / 小華 150", 
+                                   key="details_area")
+            
+            # 快速標籤按鈕 (提示：按鈕在 form 內需透過手動處理，這裡改用 columns 模擬)
+            st.caption("快速標籤：")
+            tag_cols = st.columns(4)
+            tags = ["🍴 午餐", "🚗 交通", "🏨 住宿", "🎟️ 門票"]
+            # 註：在 Form 內的按鈕會觸發 Submit，所以我們用 checkbox 模擬或提示使用者手動輸入
+            st.write("建議格式：成員 金額 / 成員 金額")
             
             if st.form_submit_button("確認儲存", type="primary"):
                 if item and total_amount > 0 and selected_bens:
-                    details_json = json.dumps(custom_shares) if split_mode != "所有人平分" else ""
+                    details_json = json.dumps(custom_shares) if mode != "所有人平分" else ""
                     new_row = {
                         'Date': datetime.now(TW_TIMEZONE).strftime('%Y-%m-%d %H:%M'),
                         'Item': str(item), 'Payer': str(payer), 'Amount': float(total_amount), 
                         'Currency': str(curr), 'Beneficiaries': ",".join(selected_bens),
-                        'SplitMode': "Manual" if split_mode != "所有人平分" else "Equal",
+                        'SplitMode': "Manual" if mode != "所有人平分" else "Equal",
                         'SplitDetails': details_json,
                         'Details': str(details)
                     }
                     save_ledger(pd.concat([get_ledger(), pd.DataFrame([new_row])], ignore_index=True))
+                    # 儲存後重置
+                    st.session_state.add_temp_details = ""
                     st.success("已儲存紀錄！")
                     st.rerun()
                 else:
-                    st.error("請確認資訊是否正確")
+                    st.error("請檢查項目、金額與參與成員是否完整。")
+                    
+        # 快速標籤 (放在 form 外以支援點擊立即更新 state)
+        st.markdown("##### 快速填寫備註標籤")
+        t_cols = st.columns(4)
+        for i, tag in enumerate(tags):
+            if t_cols[i].button(tag, key=f"tag_btn_{i}", use_container_width=True):
+                # 如果備註是空的就直接填，否則換行填
+                if st.session_state.add_temp_details:
+                    st.session_state.add_temp_details += f"\n{tag}"
+                else:
+                    st.session_state.add_temp_details = tag
+                st.rerun()
+
     else:
         st.subheader("🤝 登記還款")
         with st.form("repay_form"):
@@ -265,7 +304,6 @@ def edit_entry_ui(idx, row):
 st.title("✈️ 旅程分帳系統")
 st.markdown(f"**{len(st.session_state.members)}** 位夥伴 | **{len(df)}** 筆紀錄")
 
-# 控制島：恢復為 2 欄
 c1, c2 = st.columns(2)
 if c1.button("💸 新增支出", use_container_width=True, type="primary"):
     add_entry_ui(False)
@@ -296,15 +334,14 @@ if not df.empty:
                 if st.button("編輯", key=f"edit_btn_{idx}"):
                     edit_entry_ui(idx, row)
             
-            # 華麗展示與自動計算
             if details_text:
                 with st.expander("🔍 查看明細備註"):
                     st.write(details_text)
                     parsed_list, total_calc = parse_receipt_details(details_text)
                     if parsed_list:
                         st.markdown("---")
-                        st.caption("💡 AI 自動計算應付額：")
-                        breakdown_text = f"**總金額 ${smart_fmt(total_calc)}**，" + "，".join(parsed_list)
+                        st.caption("💡 智慧解析應付額：")
+                        breakdown_text = f"**總計 ${smart_fmt(total_calc)}**，" + "，".join(parsed_list)
                         st.info(breakdown_text)
 else:
     st.info("尚無紀錄")
@@ -367,4 +404,4 @@ if not df.empty:
                         if abs(crtr[ci][1]) < 0.01: ci += 1
 
 st.caption("---")
-st.caption("⚡️ 已新增明細備註功能與自動解析計算模組。")
+st.caption("⚡️ 介面已重構：動態分帳模式切換與快速標籤備註功能。")
