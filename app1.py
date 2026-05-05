@@ -10,8 +10,14 @@ from datetime import datetime, timedelta, timezone
 TW_TIMEZONE = timezone(timedelta(hours=8))
 CURRENCIES = ['TWD', 'JPY', 'USD', 'EUR', 'KRW']
 HISTORY_DIR = 'history'
+RECEIPTS_DIR = 'receipts'  # 照片儲存資料夾
 DATA_FILE = 'trip_ledger.csv'
 CONFIG_FILE = 'members.json'
+
+# 確保必要的資料夾存在
+for folder in [HISTORY_DIR, RECEIPTS_DIR]:
+    if not os.path.exists(folder):
+        os.makedirs(folder)
 
 # --- 基礎函數 ---
 def load_members():
@@ -40,7 +46,7 @@ def get_ledger():
             df['Payer'] = df['Payer'].fillna("未知").astype(str)
             df['Beneficiaries'] = df['Beneficiaries'].fillna("").astype(str)
             df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0.0)
-            df['Details'] = df['Details'].fillna("").astype(str)
+            df['Details'] = df['Details'].fillna("").astype(str) # 這裡現在儲存照片檔名
             return df
         except:
             return pd.DataFrame(columns=cols)
@@ -56,25 +62,6 @@ def smart_fmt(val):
         return f"{f_val:,.0f}" if f_val.is_integer() else f"{f_val:,.2f}"
     except:
         return str(val)
-
-def parse_receipt_details(details_str):
-    if not details_str or details_str.strip() == "":
-        return None, 0
-    parts = details_str.split('/')
-    parsed_results = []
-    total_calculated = 0.0
-    for p in parts:
-        amounts = re.findall(r'\d+', p)
-        if amounts:
-            val = float(amounts[-1])
-            total_calculated += val
-            found_name = "未知"
-            for m in st.session_state.members:
-                if m in p:
-                    found_name = m
-                    break
-            parsed_results.append(f"{found_name} 應付 ${smart_fmt(val)}")
-    return parsed_results, total_calculated
 
 # --- 頁面初始化 ---
 st.set_page_config(page_title="旅程分帳助手 Pro", layout="centered", page_icon="💸")
@@ -143,7 +130,6 @@ with st.sidebar:
                 st.rerun()
         st.divider()
         if st.button("🔒 封存目前帳本"):
-            if not os.path.exists(HISTORY_DIR): os.makedirs(HISTORY_DIR)
             ts = datetime.now(TW_TIMEZONE).strftime('%Y%m%d_%H%M%S')
             old_df = get_ledger()
             old_df.to_csv(f"{HISTORY_DIR}/ledger_{ts}.csv", index=False)
@@ -161,14 +147,10 @@ df = get_ledger()
 
 @st.dialog("➕ 新增帳務")
 def add_entry_ui(is_repayment=False):
-    # 初始化 Session State 用於備註緩存
-    if 'add_temp_details' not in st.session_state:
-        st.session_state.add_temp_details = ""
-    
     if not is_repayment:
         st.subheader("💸 新增支出")
         
-        # 模式切換邏輯：直接渲染，不使用手動 st.rerun
+        # 模式切換邏輯
         mode = st.radio("分帳方式", ["所有人平分", "自定義金額 (點餐分帳)"], 
                         horizontal=True, key="active_split_mode")
         
@@ -179,39 +161,43 @@ def add_entry_ui(is_repayment=False):
             payer = col_payer.selectbox("誰先墊錢？", st.session_state.members, key="add_payer")
             
             st.write("---")
-            
             total_amount = 0.0
             custom_shares = {}
             final_bens = []
             
             if mode == "所有人平分":
-                # 平分模式：自動加載全部成員
                 selected_bens = st.multiselect("參與成員", st.session_state.members, 
                                                default=st.session_state.members, 
                                                key="bens_equal_input")
-                total_amount = st.number_input("總金額", min_value=0.0, step=100.0, key="total_amt_input")
+                total_amount = st.number_input("總金額", min_value=0.0, step=10.0, key="total_amt_input")
                 final_bens = selected_bens
             else:
-                # 自定義模式：顯示「人名 + 輸入框」清單
                 st.info("💡 請在對應成員旁輸入金額，系統將自動加總。")
                 for m in st.session_state.members:
                     val = st.number_input(f"💰 {m} 的金額", min_value=0.0, step=10.0, key=f"share_val_{m}")
                     if val > 0:
                         custom_shares[m] = val
                         final_bens.append(m)
-                
                 total_amount = sum(custom_shares.values())
                 st.markdown(f"#### 📟 自動加總：**{curr} {smart_fmt(total_amount)}**")
             
             st.write("---")
-            # 明細備註
-            details = st.text_area("收據明細備註 (選填)", 
-                                   value=st.session_state.add_temp_details,
-                                   placeholder="格式：小明 180 / 小華 150", 
-                                   key="details_area")
+            # 照片上傳區
+            st.write("📸 上傳收據照片 (選填)")
+            uploaded_file = st.file_uploader("選擇收據照片", type=["jpg", "jpeg", "png"], key="receipt_upload", label_visibility="collapsed")
+            if uploaded_file:
+                st.image(uploaded_file, caption="收據預覽", width=150)
             
             if st.form_submit_button("確認儲存", type="primary"):
                 if item and total_amount > 0 and final_bens:
+                    receipt_filename = ""
+                    if uploaded_file:
+                        # 儲存照片
+                        ts = datetime.now(TW_TIMEZONE).strftime('%Y%m%d_%H%M%S')
+                        receipt_filename = f"receipt_{ts}_{uploaded_file.name}"
+                        with open(os.path.join(RECEIPTS_DIR, receipt_filename), "wb") as f:
+                            f.write(uploaded_file.getbuffer())
+                    
                     details_json = json.dumps(custom_shares) if mode != "所有人平分" else ""
                     new_row = {
                         'Date': datetime.now(TW_TIMEZONE).strftime('%Y-%m-%d %H:%M'),
@@ -219,29 +205,13 @@ def add_entry_ui(is_repayment=False):
                         'Currency': str(curr), 'Beneficiaries': ",".join(final_bens),
                         'SplitMode': "Manual" if mode != "所有人平分" else "Equal",
                         'SplitDetails': details_json,
-                        'Details': str(details)
+                        'Details': receipt_filename
                     }
                     save_ledger(pd.concat([get_ledger(), pd.DataFrame([new_row])], ignore_index=True))
-                    # 儲存後重置備註
-                    st.session_state.add_temp_details = ""
                     st.success("已儲存紀錄！")
                     st.rerun()
                 else:
-                    st.error("請檢查項目、金額與參與成員是否完整（金額需大於 0）。")
-                    
-        # 快速標籤 (放在 form 外，但不觸發全域 rerun 以防彈窗關閉)
-        st.markdown("##### 快速填寫備註標籤")
-        tags = ["🍴 午餐", "🚗 交通", "🏨 住宿", "🎟️ 門票"]
-        t_cols = st.columns(4)
-        for i, tag in enumerate(tags):
-            if t_cols[i].button(tag, key=f"tag_btn_{i}", use_container_width=True):
-                # 更新 Session State
-                if st.session_state.add_temp_details:
-                    st.session_state.add_temp_details += f" / {tag}"
-                else:
-                    st.session_state.add_temp_details = tag
-                # 注意：這會觸發 Dialog 內的重新渲染，因為 Dialog 是獨立的
-                st.rerun()
+                    st.error("請檢查項目、金額與參與成員是否完整。")
 
     else:
         st.subheader("🤝 登記還款")
@@ -270,11 +240,25 @@ def edit_entry_ui(idx, row):
         payer = st.selectbox("付款人", st.session_state.members, index=st.session_state.members.index(row['Payer']) if row['Payer'] in st.session_state.members else 0)
         current_bens = str(row['Beneficiaries']).split(",")
         bens = st.multiselect("分帳人", st.session_state.members, default=[m for m in current_bens if m in st.session_state.members])
-        details = st.text_area("收據明細備註", value=str(row.get('Details', '')))
+        
+        # 顯示舊收據
+        receipt_file = str(row.get('Details', ''))
+        if receipt_file and os.path.exists(os.path.join(RECEIPTS_DIR, receipt_file)):
+            st.write("目前收據照片：")
+            st.image(os.path.join(RECEIPTS_DIR, receipt_file), width=150)
+        
+        uploaded_file = st.file_uploader("更換收據照片", type=["jpg", "jpeg", "png"], key=f"edit_upload_{idx}")
         
         if st.form_submit_button("更新資料"):
             ledger = get_ledger()
-            ledger.loc[idx, ['Item', 'Amount', 'Currency', 'Payer', 'Beneficiaries', 'Details']] = [str(item), float(amount), str(curr), str(payer), ",".join(bens), str(details)]
+            new_receipt_filename = receipt_file
+            if uploaded_file:
+                ts = datetime.now(TW_TIMEZONE).strftime('%Y%m%d_%H%M%S')
+                new_receipt_filename = f"receipt_{ts}_{uploaded_file.name}"
+                with open(os.path.join(RECEIPTS_DIR, new_receipt_filename), "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+            
+            ledger.loc[idx, ['Item', 'Amount', 'Currency', 'Payer', 'Beneficiaries', 'Details']] = [str(item), float(amount), str(curr), str(payer), ",".join(bens), new_receipt_filename]
             save_ledger(ledger)
             st.rerun()
     if st.button("🗑️ 刪除", type="secondary"):
@@ -299,7 +283,7 @@ if not df.empty:
     for idx, row in df.iloc[::-1].iterrows():
         item_text = str(row['Item'])
         is_repayment = "還款" in item_text
-        details_text = str(row.get('Details', ''))
+        receipt_filename = str(row.get('Details', ''))
         
         with st.container(border=True):
             col_icon, col_info, col_amt = st.columns([1, 4, 1.2])
@@ -315,15 +299,17 @@ if not df.empty:
                 if st.button("編輯", key=f"edit_btn_{idx}"):
                     edit_entry_ui(idx, row)
             
-            if details_text:
-                with st.expander("🔍 查看明細備註"):
-                    st.write(details_text)
-                    parsed_list, total_calc = parse_receipt_details(details_text)
-                    if parsed_list:
-                        st.markdown("---")
-                        st.caption("💡 智慧解析應付額：")
-                        breakdown_text = f"**總計 ${smart_fmt(total_calc)}**，" + "，".join(parsed_list)
-                        st.info(breakdown_text)
+            # 收據展示
+            if not is_repayment and receipt_filename:
+                with st.expander("🔍 查看收據明細"):
+                    photo_path = os.path.join(RECEIPTS_DIR, receipt_filename)
+                    if os.path.exists(photo_path):
+                        st.image(photo_path, caption=f"項目：{item_text}")
+                    else:
+                        st.error("收據照片檔案已遺失。")
+            elif not is_repayment:
+                with st.expander("🔍 無明細資料"):
+                    st.caption("這筆紀錄沒有上傳收據照片。")
 else:
     st.info("尚無紀錄")
 
@@ -385,4 +371,4 @@ if not df.empty:
                         if abs(crtr[ci][1]) < 0.01: ci += 1
 
 st.caption("---")
-st.caption("⚡️ 介面已重構：動態分帳模式切換與快速標籤備註功能。")
+st.caption("⚡️ 已優化介面：新增收據照片存證系統，刪除冗餘備註標籤。")
