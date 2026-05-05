@@ -37,7 +37,7 @@ def get_ledger():
                 if col not in df.columns:
                     df[col] = "Equal" if col == 'SplitMode' else ""
             
-            # 確保關鍵欄位沒有 NaN，否則會報 TypeError
+            # 確保關鍵欄位沒有 NaN
             df['Item'] = df['Item'].fillna("未命名項目").astype(str)
             df['Payer'] = df['Payer'].fillna("未知").astype(str)
             df['Beneficiaries'] = df['Beneficiaries'].fillna("").astype(str)
@@ -140,89 +140,86 @@ if not st.session_state.members:
 
 df = get_ledger()
 
-@st.dialog("🤖 AI 智慧辨識")
-def ai_recognition_dialog():
-    st.write("📷 請上傳收據或發票照片，AI 將自動辨識品項。")
-    uploaded_file = st.file_uploader("選擇照片", type=["jpg", "png", "jpeg"], key="ai_file_uploader", label_visibility="collapsed")
+@st.dialog("🧾 快速錄入模式")
+def quick_entry_dialog():
+    st.write("針對單筆收據中有多個品項且參與者不同時，可在此快速拆分錄入。")
     
-    if uploaded_file:
-        # 模擬 AI 解析過程
-        status_text = st.empty()
-        progress_bar = st.progress(0)
+    # 頂部全域設定
+    col_g1, col_g2 = st.columns(2)
+    payer = col_g1.selectbox("這筆收據誰付錢？", st.session_state.members, key="qe_payer")
+    curr = col_g2.selectbox("幣別", CURRENCIES, key="qe_curr")
+    
+    st.markdown("---")
+    
+    # 初始化品項清單（如果還沒有的話）
+    if 'qe_items' not in st.session_state:
+        st.session_state.qe_items = [{"name": "", "price": 0.0, "bens": []}]
         
-        for percent_complete in range(100):
-            time.sleep(0.01)
-            progress_bar.progress(percent_complete + 1)
-            if percent_complete < 30:
-                status_text.text("🔍 正在尋找收據邊界...")
-            elif percent_complete < 70:
-                status_text.text("✍️ 正在辨識文字與金額...")
-            else:
-                status_text.text("📊 正在產 品項清單...")
-        
-        status_text.success("✅ 解析完成！")
-        st.write("---")
-        
-        # 模擬產出的品項清單
-        mock_items = [
-            {"name": "牛肉麵", "price": 180.0},
-            {"name": "大滷麵", "price": 150.0}
-        ]
-        
-        st.subheader("📋 辨識結果")
-        st.caption("請選擇誰先墊錢，並勾選每個品項的分帳夥伴：")
-        
-        payer = st.selectbox("誰先墊錢？", st.session_state.members, key="ai_global_payer")
-        curr = st.selectbox("幣別", CURRENCIES, key="ai_global_curr")
-        
-        # 儲存每個品項的勾選結果
-        ai_selections = {}
-        
-        for i, item in enumerate(mock_items):
-            with st.container(border=True):
-                col_item, col_bens = st.columns([1, 2])
-                col_item.markdown(f"**{item['name']}**")
-                col_item.markdown(f"💰 ${item['price']}")
-                
-                selected = col_bens.multiselect(
-                    f"分帳夥伴 ({item['name']})", 
-                    st.session_state.members, 
-                    key=f"ai_item_ben_{i}",
-                    label_visibility="collapsed"
-                )
-                ai_selections[i] = selected
-        
-        st.write("---")
-        if st.button("🚀 批次存入帳本", type="primary", use_container_width=True, key="ai_batch_save"):
-            new_records = []
-            now_str = datetime.now(TW_TIMEZONE).strftime('%Y-%m-%d %H:%M')
+    # 渲染每一行品項
+    for i in range(len(st.session_state.qe_items)):
+        with st.container(border=True):
+            col_name, col_price = st.columns([2, 1])
+            st.session_state.qe_items[i]["name"] = col_name.text_input(
+                f"品項名稱 #{i+1}", 
+                value=st.session_state.qe_items[i]["name"],
+                placeholder="如: 牛肉麵",
+                key=f"qe_name_{i}"
+            )
+            st.session_state.qe_items[i]["price"] = col_price.number_input(
+                f"單價", 
+                min_value=0.0, 
+                step=10.0,
+                value=st.session_state.qe_items[i]["price"],
+                key=f"qe_price_{i}"
+            )
             
-            save_count = 0
-            for i, item in enumerate(mock_items):
-                bens = ai_selections[i]
-                if bens:
-                    new_row = {
+            st.session_state.qe_items[i]["bens"] = st.multiselect(
+                f"這道菜誰點的？", 
+                st.session_state.members,
+                default=st.session_state.members if not st.session_state.qe_items[i]["bens"] else st.session_state.qe_items[i]["bens"],
+                key=f"qe_bens_{i}"
+            )
+    
+    # 控制按鈕
+    col_ctrl1, col_ctrl2 = st.columns(2)
+    if col_ctrl1.button("➕ 新增下一個品項", use_container_width=True, key="qe_add_item"):
+        st.session_state.qe_items.append({"name": "", "price": 0.0, "bens": []})
+        st.rerun()
+        
+    if col_ctrl2.button("💾 全部存入帳本", type="primary", use_container_width=True, key="qe_save_all"):
+        now_str = datetime.now(TW_TIMEZONE).strftime('%Y-%m-%d %H:%M')
+        new_records = []
+        
+        for item in st.session_state.qe_items:
+            if item["name"] and item["price"] > 0 and item["bens"]:
+                # 計算每個人該分擔多少
+                share_amount = item["price"] / len(item["bens"])
+                # 這裡按照使用者要求：產生多筆紀錄確保 100% 準確
+                for person in item["bens"]:
+                    new_records.append({
                         'Date': now_str,
-                        'Item': item['name'],
+                        'Item': f"{item['name']} ({person})",
                         'Payer': payer,
-                        'Amount': float(item['price']),
+                        'Amount': float(share_amount),
                         'Currency': curr,
-                        'Beneficiaries': ",".join(bens),
+                        'Beneficiaries': person,
                         'SplitMode': "Equal",
                         'SplitDetails': ""
-                    }
-                    new_records.append(new_row)
-                    save_count += 1
-            
-            if new_records:
-                current_ledger = get_ledger()
-                updated_ledger = pd.concat([current_ledger, pd.DataFrame(new_records)], ignore_index=True)
-                save_ledger(updated_ledger)
-                st.success(f"成功存入 {save_count} 筆紀錄！")
-                time.sleep(1)
-                st.rerun()
+                    })
             else:
-                st.error("請至少勾選一個品項的分帳夥伴")
+                st.warning(f"品項 '{item['name'] or '未命名'}' 資料不完整，已跳過。")
+        
+        if new_records:
+            current_ledger = get_ledger()
+            updated_ledger = pd.concat([current_ledger, pd.DataFrame(new_records)], ignore_index=True)
+            save_ledger(updated_ledger)
+            # 清空暫存
+            del st.session_state.qe_items
+            st.success(f"成功存入 {len(new_records)} 筆明細紀錄！")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error("沒有可儲存的有效品項。")
 
 @st.dialog("➕ 新增帳務")
 def add_entry_ui(is_repayment=False):
@@ -270,7 +267,7 @@ def add_entry_ui(is_repayment=False):
                     st.success("已儲存紀錄！")
                     st.rerun()
                 else:
-                    st.error("請確認項目、金額與參與成員是否填寫正確")
+                    st.error("請確認資訊是否填寫正確")
     else:
         st.subheader("🤝 登記還款")
         with st.form("repay_form"):
@@ -317,8 +314,10 @@ if c1.button("💸 新增支出", use_container_width=True, type="primary"):
     add_entry_ui(False)
 if c2.button("🤝 登記還款", use_container_width=True):
     add_entry_ui(True)
-if c3.button("🤖 AI 智慧辨識", use_container_width=True):
-    ai_recognition_dialog()
+if c3.button("🧾 快速錄入模式", use_container_width=True):
+    # 重置錄入暫存資料
+    st.session_state.qe_items = [{"name": "", "price": 0.0, "bens": []}]
+    quick_entry_dialog()
 
 st.divider()
 
@@ -403,4 +402,4 @@ if not df.empty:
                         if abs(crtr[ci][1]) < 0.01: ci += 1
 
 st.caption("---")
-st.caption("⚡️ 已新增 AI 智慧辨識功能模組。")
+st.caption("⚡️ 已新增快速錄入模式，方便進行多品項拆分錄入。")
